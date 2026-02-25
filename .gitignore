@@ -1,0 +1,23 @@
+# Secrets — NEVER commit these
+.env
+*.session
+*.session-journal
+
+# Database (stored on Railway Volume, not in git)
+*.db
+*.db-journal
+/data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Temp session from setup_session.py
+_tmp_session*
