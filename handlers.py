@@ -31,9 +31,10 @@ logger = logging.getLogger(__name__)
 
 HELP_TEXT = (
     "📋 **פקודות זמינות:**\n\n"
-    "/addchannel `@username` — הוסף ערוץ לסריקה\n"
-    "/removechannel `@username` — הסר ערוץ\n"
-    "/listchannels — רשימת ערוצים פעילים\n"
+    "/mychannels — רשימת כל הערוצים בחשבונך (לבחירת ID)\n"
+    "/addchannel `@username` או `ID` — הוסף ערוץ לסריקה\n"
+    "/removechannel `@username` או `ID` — הסר ערוץ\n"
+    "/listchannels — ערוצים שמוגדרים לסריקה\n"
     "/settime `HH:MM` — שנה שעת שליחה יומית (UTC)\n"
     "/sendnow — שלח את הסרטון הטוב ביותר עכשיו\n"
     "/status — סטטוס הבוט\n"
@@ -60,34 +61,63 @@ def register_handlers(
     async def cmd_start(_: Client, msg: Message) -> None:
         await msg.reply(f"👋 ברוך הבא!\n\n{HELP_TEXT}")
 
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    async def _resolve_chat(identifier: str):
+        """
+        Find a chat the userbot has access to.
+        1. For @username  → join (public) or get_chat (already member)
+        2. For numeric ID → search dialogs directly (bypasses peer cache issues)
+        """
+        identifier = identifier.strip()
+
+        # Numeric ID path — search dialogs to get the access_hash
+        if identifier.lstrip("-").isdigit():
+            target_id = int(identifier)
+            # Strip Telegram's -100 prefix to get the raw channel id
+            raw_id = abs(target_id)
+            if str(raw_id).startswith("100"):
+                raw_id = int(str(raw_id)[3:])
+
+            async for dialog in userbot.get_dialogs():
+                did = dialog.chat.id
+                if did == target_id or abs(did) == raw_id:
+                    return dialog.chat
+
+            raise ValueError(
+                "הערוץ לא נמצא בחשבונך. ודא שהחשבון שיצר את ה-Session String מנוי לערוץ זה."
+            )
+
+        # Username path — try join first, fallback to get_chat
+        try:
+            return await userbot.join_chat(identifier)
+        except Exception:
+            return await userbot.get_chat(identifier)
+
     # ── /addchannel ──────────────────────────────────────────────────────────
 
     @bot.on_message(filters.command("addchannel") & admin_filter)
     async def cmd_add_channel(_: Client, msg: Message) -> None:
         parts = msg.text.split(maxsplit=1)
         if len(parts) < 2:
-            await msg.reply("שימוש: `/addchannel @username` או `channel_id`")
+            await msg.reply(
+                "שימוש:\n"
+                "• ערוץ ציבורי: `/addchannel @username`\n"
+                "• ערוץ פרטי: `/addchannel -1001234567890`\n\n"
+                "לרשימת ערוצים זמינים: /mychannels"
+            )
             return
 
         identifier = parts[1].strip()
+        await msg.reply("🔍 מחפש ערוץ...")
         try:
-            # Try to join first — this resolves the peer AND subscribes the
-            # userbot so it can read the channel's message history.
-            # If already a member, Telegram raises an error which we catch.
-            try:
-                chat = await userbot.join_chat(identifier)
-            except Exception:
-                # Already a member, or private channel — just look it up
-                chat = await userbot.get_chat(identifier)
-
+            chat = await _resolve_chat(identifier)
             await add_channel(data_dir, str(chat.id), chat.title or identifier)
             await msg.reply(f"✅ ערוץ נוסף: **{chat.title}** (`{chat.id}`)")
         except Exception as exc:
             await msg.reply(
                 f"❌ לא הצלחתי למצוא את הערוץ.\n\n"
-                f"**ערוץ ציבורי?** השתמש ב-`@username`\n"
-                f"**ערוץ פרטי?** ודא שהחשבון שממנו יצרת את ה-Session String כבר מנוי אליו, "
-                f"ואז נסה שוב עם ה-ID המספרי שלו.\n\n"
+                f"נסה `/mychannels` לרשימת כל הערוצים שהחשבון שלך מנוי אליהם.\n\n"
                 f"`{exc}`"
             )
 
@@ -108,6 +138,38 @@ def register_handlers(
                 await msg.reply(f"✅ ערוץ הוסר: **{chat.title}**")
             else:
                 await msg.reply(f"⚠️ הערוץ לא נמצא ברשימה.")
+        except Exception as exc:
+            await msg.reply(f"❌ שגיאה: `{exc}`")
+
+    # ── /mychannels ──────────────────────────────────────────────────────────
+
+    @bot.on_message(filters.command("mychannels") & admin_filter)
+    async def cmd_my_channels(_: Client, msg: Message) -> None:
+        await msg.reply("⏳ טוען רשימת ערוצים מהחשבון שלך...")
+        lines = []
+        try:
+            async for dialog in userbot.get_dialogs():
+                chat = dialog.chat
+                # Show only channels and supergroups
+                if str(chat.type) not in ("ChatType.CHANNEL", "ChatType.SUPERGROUP"):
+                    continue
+                username = f"@{chat.username}" if chat.username else "פרטי"
+                lines.append(f"• **{chat.title}** — `{chat.id}` ({username})")
+                if len(lines) >= 50:
+                    break
+
+            if not lines:
+                await msg.reply("לא נמצאו ערוצים בחשבון.")
+                return
+
+            # Split into chunks of 30 to avoid message size limit
+            chunk = lines[:30]
+            await msg.reply(
+                f"📋 **ערוצים בחשבון ({len(lines)} נמצאו):**\n\n" + "\n".join(chunk)
+            )
+            if len(lines) > 30:
+                await msg.reply("\n".join(lines[30:]))
+
         except Exception as exc:
             await msg.reply(f"❌ שגיאה: `{exc}`")
 
