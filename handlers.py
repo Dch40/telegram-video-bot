@@ -105,8 +105,20 @@ def register_handlers(
 
         chat = msg.forward_from_chat
         await add_channel(data_dir, str(chat.id), chat.title or str(chat.id))
+
+        # Warm up userbot peer cache so the channel is immediately scannable.
+        # For public channels (@username) this always works.
+        # For private channels the userbot must already be a subscriber.
+        cache_note = ""
+        try:
+            lookup = f"@{chat.username}" if getattr(chat, "username", None) else chat.id
+            await userbot.get_chat(lookup)
+        except Exception as e:
+            logger.warning("Peer cache warmup failed for %s: %s", chat.id, e)
+            cache_note = "\n⚠️ ודא שחשבון ה-Userbot מנוי לערוץ זה."
+
         await msg.reply(
-            f"✅ ערוץ נוסף: **{chat.title}** (`{chat.id}`)\n\n"
+            f"✅ ערוץ נוסף: **{chat.title}** (`{chat.id}`){cache_note}\n\n"
             f"💡 **טיפ:** כדי להוסיף ערוצים, פשוט העבר (Forward) הודעה מהם לכאן — "
             f"ללא צורך ב-ID."
         )
@@ -308,6 +320,36 @@ def register_handlers(
         except Exception as exc:
             logger.error("Search error: %s", exc)
             await msg.reply(f"❌ שגיאה בחיפוש: `{exc}`")
+
+    # ── /debug ───────────────────────────────────────────────────────────────
+
+    @bot.on_message(filters.command("debug") & admin_filter)
+    async def cmd_debug(_: Client, msg: Message) -> None:
+        """Show userbot identity and test access to each stored channel."""
+        lines = ["🔧 **אבחון בוט**\n"]
+
+        try:
+            me = await userbot.get_me()
+            lines.append(f"👤 Userbot: **{me.first_name}** (ID: `{me.id}`)")
+            if me.phone_number:
+                lines.append(f"📱 מספר: `+{me.phone_number}`")
+        except Exception as e:
+            lines.append(f"❌ שגיאת Userbot: `{e}`")
+
+        channels = await get_channels(data_dir)
+        lines.append(f"\n📋 ערוצים ב-DB: **{len(channels)}**")
+
+        if channels:
+            lines.append("🔍 בדיקת גישה (עד 5 ערוצים):")
+            for cid, cname in channels[:5]:
+                try:
+                    lookup = int(cid)
+                    await userbot.get_chat(lookup)
+                    lines.append(f"  ✅ {cname}")
+                except Exception as e:
+                    lines.append(f"  ❌ {cname}: `{str(e)[:60]}`")
+
+        await msg.reply("\n".join(lines))
 
     # ── Catch-all for unknown commands ───────────────────────────────────────
 

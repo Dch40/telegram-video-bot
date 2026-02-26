@@ -84,12 +84,33 @@ async def main() -> None:
     logger.info("Starting userbot...")
     await userbot.start()
 
+    # Identify which account the session belongs to
+    userbot_name = "???"
+    userbot_id   = "???"
+    try:
+        me = await userbot.get_me()
+        userbot_name = me.first_name or ""
+        userbot_id   = str(me.id)
+        logger.info(
+            "Userbot identity: %s (id=%s, phone=%s)",
+            userbot_name, userbot_id, me.phone_number,
+        )
+    except Exception as e:
+        logger.error("Could not identify userbot account: %s", e)
+
     logger.info("Syncing dialogs (populating peer cache)...")
     dialog_count = 0
     try:
-        async for _ in userbot.get_dialogs():
+        # Use explicit limit — pyrofork's limit=0 default may return nothing
+        async for _ in userbot.get_dialogs(limit=500):
             dialog_count += 1
         logger.info("Dialogs synced: %d chats cached.", dialog_count)
+        # Also sweep archived chats (folder_id=1) if regular dialogs were empty
+        if dialog_count == 0:
+            logger.warning("No dialogs in main folder — trying archived folder...")
+            async for _ in userbot.get_dialogs(limit=500, folder_id=1):
+                dialog_count += 1
+            logger.info("After archive sweep: %d chats cached.", dialog_count)
     except Exception as e:
         logger.error("Dialog sync FAILED: %s — channel scanning may not work!", e)
 
@@ -138,6 +159,7 @@ async def main() -> None:
             await bot.send_message(
                 admin_id,
                 f"🟢 הבוט עלה!\n"
+                f"👤 Userbot: {userbot_name} (ID: `{userbot_id}`)\n"
                 f"💾 ערוצים בזיכרון: {dialog_count}\n"
                 f"⏰ שליחה יומית: {send_hour:02d}:{send_minute:02d} UTC",
             )
