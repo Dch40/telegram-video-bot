@@ -71,13 +71,24 @@ def register_handlers(
 
         identifier = parts[1].strip()
         try:
-            chat = await userbot.get_chat(identifier)
+            # Try to join first — this resolves the peer AND subscribes the
+            # userbot so it can read the channel's message history.
+            # If already a member, Telegram raises an error which we catch.
+            try:
+                chat = await userbot.join_chat(identifier)
+            except Exception:
+                # Already a member, or private channel — just look it up
+                chat = await userbot.get_chat(identifier)
+
             await add_channel(data_dir, str(chat.id), chat.title or identifier)
             await msg.reply(f"✅ ערוץ נוסף: **{chat.title}** (`{chat.id}`)")
         except Exception as exc:
             await msg.reply(
-                f"❌ לא הצלחתי למצוא את הערוץ.\n"
-                f"ודא שחשבון ה-Userbot שלך חבר בערוץ.\n\n`{exc}`"
+                f"❌ לא הצלחתי למצוא את הערוץ.\n\n"
+                f"**ערוץ ציבורי?** השתמש ב-`@username`\n"
+                f"**ערוץ פרטי?** ודא שהחשבון שממנו יצרת את ה-Session String כבר מנוי אליו, "
+                f"ואז נסה שוב עם ה-ID המספרי שלו.\n\n"
+                f"`{exc}`"
             )
 
     # ── /removechannel ───────────────────────────────────────────────────────
