@@ -103,8 +103,8 @@ async def daily_job(
         )
         await mark_as_sent(data_dir, str(best_message.id), best_channel_id)
 
-        dur_min = best_message.video.duration // 60
-        dur_sec = best_message.video.duration % 60
+        dur_min = int(best_message.video.duration) // 60
+        dur_sec = int(best_message.video.duration) % 60
         views   = best_message.views or "N/A"
 
         await bot.send_message(
