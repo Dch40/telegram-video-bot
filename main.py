@@ -77,17 +77,27 @@ async def main() -> None:
     # ── Scheduler ────────────────────────────────────────────────────────────
     scheduler = AsyncIOScheduler(timezone="UTC")
 
-    async with userbot, bot:
-        # Populate Pyrogram's peer cache so numeric channel IDs work.
-        # This iterates through all dialogs once at startup.
-        logger.info("Syncing dialogs (may take a few seconds)...")
-        try:
-            async for _ in userbot.get_dialogs():
-                pass
-            logger.info("Dialogs synced.")
-        except Exception as e:
-            logger.warning("Dialog sync warning: %s", e)
+    # ── Start userbot FIRST and sync dialogs BEFORE bot starts ───────────────
+    # This is critical: when both clients run together, pyrofork can confuse
+    # which session to use, causing get_dialogs() to route through the bot
+    # and fail with BOT_METHOD_INVALID.
+    logger.info("Starting userbot...")
+    await userbot.start()
 
+    logger.info("Syncing dialogs (populating peer cache)...")
+    dialog_count = 0
+    try:
+        async for _ in userbot.get_dialogs():
+            dialog_count += 1
+        logger.info("Dialogs synced: %d chats cached.", dialog_count)
+    except Exception as e:
+        logger.error("Dialog sync FAILED: %s — channel scanning may not work!", e)
+
+    # ── Now start the bot ─────────────────────────────────────────────────────
+    logger.info("Starting bot...")
+    await bot.start()
+
+    try:
         # Register all command handlers
         register_handlers(
             bot=bot,
@@ -119,23 +129,28 @@ async def main() -> None:
 
         scheduler.start()
         logger.info(
-            "Bot started. Daily job at %02d:%02d UTC. Admin: %s",
-            send_hour, send_minute, admin_id,
+            "Bot started. Daily job at %02d:%02d UTC. Dialogs cached: %d",
+            send_hour, send_minute, dialog_count,
         )
 
-        # Notify admin that the bot is online
+        # Notify admin
         try:
             await bot.send_message(
                 admin_id,
                 f"🟢 הבוט עלה!\n"
-                f"⏰ שליחה יומית: {send_hour:02d}:{send_minute:02d} UTC\n"
-                f"הקלד /status לפרטים נוספים.",
+                f"💾 ערוצים בזיכרון: {dialog_count}\n"
+                f"⏰ שליחה יומית: {send_hour:02d}:{send_minute:02d} UTC",
             )
         except Exception as e:
             logger.warning("Could not send startup message: %s", e)
 
         # Keep running forever
         await asyncio.Event().wait()
+
+    finally:
+        scheduler.shutdown(wait=False)
+        await bot.stop()
+        await userbot.stop()
 
 
 if __name__ == "__main__":
