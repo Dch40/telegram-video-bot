@@ -1,12 +1,11 @@
 """
-Channel scanner — finds the best video across all active channels.
+Channel scanner — finds the top videos across all active channels.
 
-Scoring formula:  score = duration_seconds × √(views + 1)
-This gives roughly equal weight to length and popularity.
+For each channel: collect all qualifying videos from the last 24 hours,
+sort by views descending, and forward up to VIDEOS_PER_CHANNEL.
 """
 
 import logging
-import math
 from datetime import datetime, timedelta, timezone
 
 from pyrogram import Client
@@ -16,12 +15,9 @@ from db import get_channels, mark_as_sent, was_sent_today
 
 logger = logging.getLogger(__name__)
 
-LOOKBACK_HOURS = 24   # How far back to search each scan
-SCAN_LIMIT     = 100  # Max messages to check per channel
-
-
-def _score(duration_seconds: int, views: int) -> float:
-    return duration_seconds * math.sqrt(views + 1)
+LOOKBACK_HOURS     = 24   # How far back to search each scan
+SCAN_LIMIT         = 100  # Max messages to check per channel
+VIDEOS_PER_CHANNEL = 3    # Max videos to send per channel per run
 
 
 async def daily_job(
@@ -32,7 +28,7 @@ async def daily_job(
     admin_id: int,
     data_dir: str,
 ) -> None:
-    """Scan all channels, pick the best video, copy it to target_channel."""
+    """For every channel send up to VIDEOS_PER_CHANNEL top-viewed videos."""
     logger.info("Daily job started.")
 
     try:
@@ -43,14 +39,13 @@ async def daily_job(
 
         cutoff = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
 
-        best_message: Message | None = None
-        best_channel_id: str | None = None
-        best_score: float = -1.0
+        total_sent  = 0
         scan_errors: list[str] = []
-        videos_checked = 0
 
         for channel_id, channel_name in channels:
             logger.info("Scanning: %s (%s)", channel_name, channel_id)
+            candidates: list[Message] = []
+
             try:
                 async for msg in userbot.get_chat_history(channel_id, limit=SCAN_LIMIT):
                     msg_time = msg.date
@@ -65,19 +60,40 @@ async def daily_job(
                     if await was_sent_today(data_dir, str(msg.id), str(channel_id)):
                         continue
 
-                    videos_checked += 1
-                    score = _score(video.duration, msg.views or 0)
-                    if score > best_score:
-                        best_score = score
-                        best_message = msg
-                        best_channel_id = str(channel_id)
+                    candidates.append(msg)
 
             except Exception as exc:
                 logger.warning("Could not scan %s: %s", channel_name, exc)
                 scan_errors.append(f"• {channel_name}: `{exc}`")
+                continue
 
-        # ── No winner found — report why ─────────────────────────────────────
-        if best_message is None:
+            if not candidates:
+                continue
+
+            # Sort by views descending and take the top N
+            candidates.sort(key=lambda m: m.views or 0, reverse=True)
+            top = candidates[:VIDEOS_PER_CHANNEL]
+
+            for msg in top:
+                try:
+                    await userbot.copy_message(
+                        chat_id=target_channel,
+                        from_chat_id=str(channel_id),
+                        message_id=msg.id,
+                    )
+                    await mark_as_sent(data_dir, str(msg.id), str(channel_id))
+                    total_sent += 1
+                    logger.info(
+                        "Sent video from %s (msg_id=%s, views=%s).",
+                        channel_name, msg.id, msg.views,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to copy msg %s from %s: %s", msg.id, channel_name, exc
+                    )
+
+        # ── Summary report ────────────────────────────────────────────────────
+        if total_sent == 0:
             if scan_errors:
                 err_text = "\n".join(scan_errors[:5])
                 await bot.send_message(
@@ -95,32 +111,17 @@ async def daily_job(
                 )
             return
 
-        # ── Send the winner ───────────────────────────────────────────────────
-        await userbot.copy_message(
-            chat_id=target_channel,
-            from_chat_id=best_channel_id,
-            message_id=best_message.id,
-        )
-        await mark_as_sent(data_dir, str(best_message.id), best_channel_id)
-
-        dur_min = int(best_message.video.duration) // 60
-        dur_sec = int(best_message.video.duration) % 60
-        views   = best_message.views or "N/A"
-
         await bot.send_message(
             admin_id,
-            f"✅ סרטון נשלח!\n"
-            f"📺 ערוץ: `{best_channel_id}`\n"
-            f"⏱ אורך: {dur_min}:{dur_sec:02d}\n"
-            f"👁 צפיות: {views}\n"
-            f"🔍 מתוך {videos_checked} סרטונים שנמצאו",
+            f"✅ נשלחו **{total_sent}** סרטונים מ-{len(channels)} ערוצים\n"
+            f"(עד {VIDEOS_PER_CHANNEL} סרטונים עם הכי הרבה צפיות מכל ערוץ)",
         )
         if scan_errors:
             await bot.send_message(
                 admin_id,
                 f"⚠️ {len(scan_errors)} ערוצים לא היו נגישים:\n" + "\n".join(scan_errors[:5]),
             )
-        logger.info("Video sent from %s (msg %s).", best_channel_id, best_message.id)
+        logger.info("Daily job done. Sent %d videos total.", total_sent)
 
     except Exception as exc:
         logger.error("daily_job error: %s", exc, exc_info=True)
