@@ -31,9 +31,10 @@ logger = logging.getLogger(__name__)
 
 HELP_TEXT = (
     "📋 **פקודות זמינות:**\n\n"
-    "/mychannels — רשימת כל הערוצים בחשבונך (לבחירת ID)\n"
-    "/addchannel `@username` או `ID` — הוסף ערוץ לסריקה\n"
-    "/removechannel `@username` או `ID` — הסר ערוץ\n"
+    "➕ **הוספת ערוץ לסריקה** — שתי אפשרויות:\n"
+    "  • **הכי קל:** העבר (Forward) הודעה מהערוץ לכאן\n"
+    "  • `/addchannel @username` — לערוץ ציבורי\n\n"
+    "/removechannel `ID` — הסר ערוץ (קבל ID מ-/listchannels)\n"
     "/listchannels — ערוצים שמוגדרים לסריקה\n"
     "/settime `HH:MM` — שנה שעת שליחה יומית (UTC)\n"
     "/sendnow — שלח את הסרטון הטוב ביותר עכשיו\n"
@@ -94,6 +95,22 @@ def register_handlers(
         except Exception:
             return await userbot.get_chat(identifier)
 
+    # ── Forward message → auto-add channel (easiest method) ─────────────────
+
+    @bot.on_message(filters.forwarded & admin_filter)
+    async def handle_forwarded(_: Client, msg: Message) -> None:
+        """User forwards any message from a channel → bot adds it automatically."""
+        if not msg.forward_from_chat:
+            return  # Forwarded from a user, not a channel — ignore silently
+
+        chat = msg.forward_from_chat
+        await add_channel(data_dir, str(chat.id), chat.title or str(chat.id))
+        await msg.reply(
+            f"✅ ערוץ נוסף: **{chat.title}** (`{chat.id}`)\n\n"
+            f"💡 **טיפ:** כדי להוסיף ערוצים, פשוט העבר (Forward) הודעה מהם לכאן — "
+            f"ללא צורך ב-ID."
+        )
+
     # ── /addchannel ──────────────────────────────────────────────────────────
 
     @bot.on_message(filters.command("addchannel") & admin_filter)
@@ -101,10 +118,10 @@ def register_handlers(
         parts = msg.text.split(maxsplit=1)
         if len(parts) < 2:
             await msg.reply(
-                "שימוש:\n"
-                "• ערוץ ציבורי: `/addchannel @username`\n"
-                "• ערוץ פרטי: `/addchannel -1001234567890`\n\n"
-                "לרשימת ערוצים זמינים: /mychannels"
+                "**הדרך הקלה ביותר:**\n"
+                "העבר (Forward) הודעה מהערוץ ישירות לכאן ✅\n\n"
+                "**או לפי שם משתמש:**\n"
+                "`/addchannel @username`"
             )
             return
 
@@ -116,8 +133,8 @@ def register_handlers(
             await msg.reply(f"✅ ערוץ נוסף: **{chat.title}** (`{chat.id}`)")
         except Exception as exc:
             await msg.reply(
-                f"❌ לא הצלחתי למצוא את הערוץ.\n\n"
-                f"נסה `/mychannels` לרשימת כל הערוצים שהחשבון שלך מנוי אליהם.\n\n"
+                f"❌ לא הצלחתי.\n\n"
+                f"**הדרך הקלה:** העבר (Forward) הודעה מהערוץ לכאן.\n\n"
                 f"`{exc}`"
             )
 
@@ -127,51 +144,48 @@ def register_handlers(
     async def cmd_remove_channel(_: Client, msg: Message) -> None:
         parts = msg.text.split(maxsplit=1)
         if len(parts) < 2:
-            await msg.reply("שימוש: `/removechannel @username` או `channel_id`")
+            await msg.reply(
+                "שימוש: `/removechannel -1001234567890`\n"
+                "השתמש ב-/listchannels לקבלת ה-ID."
+            )
             return
 
         identifier = parts[1].strip()
-        try:
-            chat = await userbot.get_chat(identifier)
-            removed = await remove_channel(data_dir, str(chat.id))
-            if removed:
-                await msg.reply(f"✅ ערוץ הוסר: **{chat.title}**")
-            else:
-                await msg.reply(f"⚠️ הערוץ לא נמצא ברשימה.")
-        except Exception as exc:
-            await msg.reply(f"❌ שגיאה: `{exc}`")
+
+        # Match against stored channels — no userbot call needed
+        channels = await get_channels(data_dir)
+        match_id, match_name = None, None
+        for cid, cname in channels:
+            if identifier == cid or identifier.lstrip("-") == cid.lstrip("-"):
+                match_id, match_name = cid, cname
+                break
+
+        if match_id is None:
+            await msg.reply(
+                f"⚠️ לא נמצא ערוץ עם ID `{identifier}` ברשימה.\n"
+                f"השתמש ב-/listchannels לרשימה עם ה-IDים."
+            )
+            return
+
+        await remove_channel(data_dir, match_id)
+        await msg.reply(f"✅ ערוץ הוסר: **{match_name}**")
 
     # ── /mychannels ──────────────────────────────────────────────────────────
 
     @bot.on_message(filters.command("mychannels") & admin_filter)
     async def cmd_my_channels(_: Client, msg: Message) -> None:
-        await msg.reply("⏳ טוען רשימת ערוצים מהחשבון שלך...")
-        lines = []
-        try:
-            async for dialog in userbot.get_dialogs():
-                chat = dialog.chat
-                # Show only channels and supergroups
-                if str(chat.type) not in ("ChatType.CHANNEL", "ChatType.SUPERGROUP"):
-                    continue
-                username = f"@{chat.username}" if chat.username else "פרטי"
-                lines.append(f"• **{chat.title}** — `{chat.id}` ({username})")
-                if len(lines) >= 50:
-                    break
-
-            if not lines:
-                await msg.reply("לא נמצאו ערוצים בחשבון.")
-                return
-
-            # Split into chunks of 30 to avoid message size limit
-            chunk = lines[:30]
-            await msg.reply(
-                f"📋 **ערוצים בחשבון ({len(lines)} נמצאו):**\n\n" + "\n".join(chunk)
-            )
-            if len(lines) > 30:
-                await msg.reply("\n".join(lines[30:]))
-
-        except Exception as exc:
-            await msg.reply(f"❌ שגיאה: `{exc}`")
+        await msg.reply(
+            "💡 **איך להוסיף ערוץ לסריקה:**\n\n"
+            "**הדרך הכי קלה — Forward:**\n"
+            "1. כנס לערוץ שתרצה להוסיף\n"
+            "2. לחץ על כל הודעה → Forward\n"
+            "3. בחר את הבוט הזה כיעד\n"
+            "4. הבוט יוסיף את הערוץ אוטומטית ✅\n\n"
+            "**לערוץ ציבורי עם @username:**\n"
+            "`/addchannel @username`\n\n"
+            "**לראות ערוצים שכבר הוספת:**\n"
+            "/listchannels"
+        )
 
     # ── /listchannels ────────────────────────────────────────────────────────
 
