@@ -63,7 +63,9 @@ async def main() -> None:
         api_id=api_id,
         api_hash=api_hash,
         session_string=session_string,
-        workdir=data_dir,
+        # No workdir: session_string is the sole source of auth.
+        # Providing workdir causes pyrofork to prefer any existing .session file
+        # over the session_string, which can lead to BOT_METHOD_INVALID errors.
     )
 
     bot = Client(
