@@ -78,6 +78,16 @@ async def main() -> None:
     scheduler = AsyncIOScheduler(timezone="UTC")
 
     async with userbot, bot:
+        # Populate Pyrogram's peer cache so numeric channel IDs work.
+        # This iterates through all dialogs once at startup.
+        logger.info("Syncing dialogs (may take a few seconds)...")
+        try:
+            async for _ in userbot.get_dialogs():
+                pass
+            logger.info("Dialogs synced.")
+        except Exception as e:
+            logger.warning("Dialog sync warning: %s", e)
+
         # Register all command handlers
         register_handlers(
             bot=bot,
